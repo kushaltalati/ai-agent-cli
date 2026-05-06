@@ -460,19 +460,35 @@ async function runAgentTurn(messages) {
 async function main() {
   const messages = [{ role: "system", content: SYSTEM_PROMPT }];
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  const ask = () => new Promise((res) => rl.question("you > ", (l) => res(l)));
+  let closed = false;
+  rl.on("close", () => {
+    closed = true;
+  });
+  const ask = () =>
+    new Promise((res, rej) => {
+      if (closed) return rej(new Error("closed"));
+      try {
+        rl.question("you > ", (l) => res(l));
+      } catch (err) {
+        rej(err);
+      }
+    });
 
   console.log("AI Agent CLI — chat with the agent. Type 'exit' to quit.");
   console.log(`Model: ${MODEL}`);
   console.log('Try: "clone <any-url>" or "build a <type> site for <whom>".\n');
 
-  while (true) {
-    const line = (await ask()).trim();
+  while (!closed) {
+    let line;
+    try {
+      line = (await ask()).trim();
+    } catch {
+      break;
+    }
     if (!line) continue;
     if (["exit", "quit", ":q"].includes(line.toLowerCase())) {
       rl.close();
-      console.log(`bye. (model calls this session: ${totalCalls})`);
-      return;
+      break;
     }
     messages.push({ role: "user", content: line });
     try {
@@ -482,6 +498,7 @@ async function main() {
     }
     console.log(`(model calls so far: ${totalCalls})`);
   }
+  console.log(`\nbye. (model calls this session: ${totalCalls})`);
 }
 
 main().catch((err) => {

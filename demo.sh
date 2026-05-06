@@ -17,8 +17,8 @@ rm -rf scaler-clone
 echo "==> Launching AI Agent CLI..."
 echo
 
-# Pipe the instruction + 'exit' so the agent runs once and terminates cleanly.
-printf "clone the scaler academy website\nexit\n" | npm start
+# Pipe the instruction; EOF after the line tells the agent to exit cleanly.
+printf "clone the scaler academy website\n" | npm start
 
 echo
 echo "==> Opening generated site in default browser..."
