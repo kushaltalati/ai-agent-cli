@@ -1,58 +1,55 @@
 import "dotenv/config";
 import axios from "axios";
-import { OpenAI } from "openai";
-import { exec } from "child_process";
-import { promises as fs } from "fs";
+import readline from "readline";
 import path from "path";
-import readline from "readline/promises";
-import { stdin as input, stdout as output } from "process";
+import fs from "fs/promises";
+import { exec } from "child_process";
+import { OpenAI } from "openai";
+
+if (!process.env.GEMINI_API_KEY) {
+  console.error(
+    "Missing GEMINI_API_KEY. Copy .env.example to .env and paste a free key from https://aistudio.google.com/app/apikey"
+  );
+  process.exit(1);
+}
 
 const MODEL = process.env.MODEL || "gemini-2.5-flash";
 const MIN_DELAY_MS = Number(process.env.MIN_DELAY_MS || 6500);
+const PROJECT_ROOT = process.cwd();
+const MAX_TURN_CALLS = 30;
+const MAX_TOOL_ERRORS = 4;
+const MAX_HISTORY_CHARS = 60_000;
+
 const client = new OpenAI({
   apiKey: process.env.GEMINI_API_KEY,
   baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const truncate = (s, n) => {
+  if (s == null) return "";
+  const str = String(s);
+  return str.length > n ? str.slice(0, n) + "…" : str;
+};
 
-let lastCallAt = 0;
-async function chatWithRetry(messages) {
-  const since = Date.now() - lastCallAt;
-  if (since < MIN_DELAY_MS) await sleep(MIN_DELAY_MS - since);
-
-  let attempt = 0;
-  while (true) {
-    try {
-      lastCallAt = Date.now();
-      return await client.chat.completions.create({
-        model: MODEL,
-        response_format: { type: "json_object" },
-        messages,
-      });
-    } catch (err) {
-      const status = err?.status ?? err?.response?.status;
-      if (status === 429 && attempt < 5) {
-        const wait = Math.min(60000, 5000 * 2 ** attempt);
-        console.log(`[rate-limit] 429 — waiting ${wait / 1000}s (attempt ${attempt + 1}/5)`);
-        await sleep(wait);
-        attempt++;
-        continue;
-      }
-      throw err;
-    }
+function safePath(target) {
+  const resolved = path.resolve(PROJECT_ROOT, target);
+  if (!resolved.startsWith(PROJECT_ROOT)) {
+    throw new Error(`Refusing to touch a path outside the project: ${target}`);
   }
+  return resolved;
 }
 
 async function getTheWeatherOfCity(cityname = "") {
-  const url = `https://wttr.in/${String(cityname).toLowerCase()}?format=%C+%t`;
-  const { data } = await axios.get(url, { responseType: "text" });
+  const { data } = await axios.get(
+    `https://wttr.in/${String(cityname).toLowerCase()}?format=%C+%t`,
+    { responseType: "text" }
+  );
   return `The Weather of ${cityname} is ${data}`;
 }
 
 async function getGithubDetailsAboutUser(username = "") {
-  const url = `https://api.github.com/users/${username}`;
-  const { data } = await axios.get(url);
+  const { data } = await axios.get(`https://api.github.com/users/${username}`);
   return {
     login: data.login,
     name: data.name,
@@ -63,203 +60,403 @@ async function getGithubDetailsAboutUser(username = "") {
 
 function executeCommand(cmd = "") {
   return new Promise((resolve) => {
-    exec(cmd, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) {
-        resolve(`ERROR running "${cmd}": ${error.message}\nSTDERR: ${stderr}`);
-        return;
-      }
-      resolve(stdout.trim() || stderr.trim() || `Command "${cmd}" completed.`);
+    exec(cmd, { cwd: PROJECT_ROOT, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) resolve(`ERROR: ${err.message}\n${stderr || ""}`);
+      else resolve(stdout.trim() || `Command executed: ${cmd}`);
     });
   });
 }
 
-function parseArgs(args) {
-  if (args == null) return {};
-  if (typeof args === "object") return args;
+async function fetchUrl(args) {
+  const url = typeof args === "string" ? args.trim().replace(/^['"]|['"]$/g, "") : args?.url;
+  if (!url) return "fetchUrl needs a URL string.";
+  const { data } = await axios.get(url, {
+    timeout: 15_000,
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; ai-agent-cli/1.0)" },
+    responseType: "text",
+    transformResponse: [(d) => d],
+  });
+  const html = String(data);
+  const stripped = html
+    .replace(/<script\b[\s\S]*?<\/script>/gi, "")
+    .replace(/<style\b[\s\S]*?<\/style>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const cap = 8000;
+  return stripped.length > cap ? stripped.slice(0, cap) + "…[truncated]" : stripped;
+}
+
+async function createFolder(args) {
+  const target = safePath(typeof args === "string" ? args : args?.path || "");
+  await fs.mkdir(target, { recursive: true });
+  return `Folder ready: ${path.relative(PROJECT_ROOT, target) || "."}`;
+}
+
+function coerceWriteArgs(raw) {
+  if (raw && typeof raw === "object") return raw;
+  if (typeof raw !== "string") return null;
   try {
-    return JSON.parse(args);
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj === "object") return obj;
   } catch {
-    return { _raw: args };
+    // fall through to lenient extraction below
   }
+  const pathMatch = raw.match(/"path"\s*:\s*"((?:\\.|[^"\\])*)"/);
+  if (!pathMatch) return null;
+  const filePath = pathMatch[1].replace(/\\(.)/g, "$1");
+  const contentKey = raw.indexOf('"content"');
+  if (contentKey === -1) return null;
+  const colon = raw.indexOf(":", contentKey);
+  const firstQuote = raw.indexOf('"', colon + 1);
+  if (firstQuote === -1) return null;
+  let i = firstQuote + 1;
+  let esc = false;
+  let endQuote = -1;
+  while (i < raw.length) {
+    const ch = raw[i];
+    if (esc) esc = false;
+    else if (ch === "\\") esc = true;
+    else if (ch === '"') {
+      const after = raw.slice(i + 1).trimStart();
+      if (after.startsWith("}") || after.startsWith(",") || after === "") {
+        endQuote = i;
+        break;
+      }
+    }
+    i++;
+  }
+  if (endQuote === -1) {
+    const lastBrace = raw.lastIndexOf("}");
+    let j = lastBrace - 1;
+    while (j > firstQuote && /\s/.test(raw[j])) j--;
+    if (raw[j] === '"') endQuote = j;
+  }
+  if (endQuote === -1) return null;
+  const content = raw
+    .slice(firstQuote + 1, endQuote)
+    .replace(/\\n/g, "\n")
+    .replace(/\\r/g, "\r")
+    .replace(/\\t/g, "\t")
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, "\\");
+  return { path: filePath, content };
 }
 
 async function writeFile(args) {
-  const { path: filePath, content } = parseArgs(args);
-  if (!filePath || content == null) {
-    return `writeFile needs { path, content } — got ${JSON.stringify(args).slice(0, 120)}`;
+  const parsed = coerceWriteArgs(args);
+  if (!parsed?.path || parsed.content == null) {
+    throw new Error('writeFile needs {"path":"...","content":"..."}');
   }
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, content, "utf8");
-  return `Wrote ${content.length} bytes to ${filePath}`;
+  const target = safePath(parsed.path);
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.writeFile(target, parsed.content, "utf8");
+  return `Wrote ${parsed.content.length} bytes → ${parsed.path}`;
 }
 
-async function readFile(args) {
-  const a = parseArgs(args);
-  const filePath = a.path || a._raw || args;
-  const data = await fs.readFile(filePath, "utf8");
-  return data.length > 4000 ? data.slice(0, 4000) + "\n...[truncated]" : data;
+async function writeFileBase64(args) {
+  const obj =
+    typeof args === "object" && args
+      ? args
+      : (() => {
+          try {
+            return JSON.parse(args);
+          } catch {
+            return null;
+          }
+        })();
+  if (!obj?.path || !(obj.content_base64 || obj.content)) {
+    throw new Error('writeFileBase64 needs {"path":"...","content_base64":"..."}');
+  }
+  const target = safePath(obj.path);
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  const buf = Buffer.from(String(obj.content_base64 || obj.content).replace(/\s+/g, ""), "base64");
+  if (!buf.length) throw new Error("decoded base64 is empty");
+  await fs.writeFile(target, buf);
+  return `Wrote ${buf.length} bytes (base64) → ${obj.path}`;
 }
 
-async function createDirectory(args) {
-  const a = parseArgs(args);
-  const dirPath = a.path || a._raw || args;
-  await fs.mkdir(dirPath, { recursive: true });
-  return `Created directory ${dirPath}`;
+async function readFileTool(args) {
+  const target = safePath(typeof args === "string" ? args : args?.path || "");
+  const data = await fs.readFile(target, "utf8");
+  return data.length > 4000 ? data.slice(0, 4000) + "\n…[truncated]" : data;
 }
 
-async function listDirectory(args) {
-  const a = parseArgs(args);
-  const dirPath = a.path || a._raw || args || ".";
-  const entries = await fs.readdir(dirPath, { withFileTypes: true });
-  return entries.map((e) => `${e.isDirectory() ? "dir " : "file"}  ${e.name}`).join("\n");
+async function listDir(args) {
+  const target = safePath(typeof args === "string" ? args || "." : args?.path || ".");
+  const entries = await fs.readdir(target, { withFileTypes: true });
+  return entries.map((e) => (e.isDirectory() ? `${e.name}/` : e.name)).join("\n");
 }
 
 const tool_map = {
   getTheWeatherOfCity,
   getGithubDetailsAboutUser,
   executeCommand,
+  fetchUrl,
+  createFolder,
   writeFile,
-  readFile,
-  createDirectory,
-  listDirectory,
+  writeFileBase64,
+  readFile: readFileTool,
+  listDir,
 };
 
-const SYSTEM_PROMPT = `
-You are an AI Assistant that operates on START, THINK, TOOL, OBSERVE, and OUTPUT steps.
-You break large problems into small steps, reason multiple times, then act.
+const SYSTEM_PROMPT = `You are an AI coding agent that builds real files on disk to satisfy a user's instruction.
+You reply with EXACTLY ONE JSON object per turn — never multiple, never plain prose, never markdown fences.
 
-Tools:
-1. getTheWeatherOfCity(cityname: string)
-2. getGithubDetailsAboutUser(username: string)
-3. executeCommand(cmd: string) — runs a shell command and returns stdout
-4. writeFile({ path: string, content: string }) — creates parent dirs and writes a file
-5. readFile(path: string)
-6. createDirectory(path: string)
-7. listDirectory(path: string)
+Each reply has the shape:
+{"step":"START | THINK | TOOL | OUTPUT","content":"...","tool_name":"<optional>","tool_args":"<optional>"}
 
-Rules:
-1. Always reply with a SINGLE JSON object — no markdown fences, no extra prose.
-2. One step at a time. After every TOOL step, WAIT for the OBSERVE step before continuing.
-3. Do exactly ONE concise THINK step before each TOOL call or final OUTPUT (not multiple — the host has tight rate limits).
-4. For tools needing multiple arguments (e.g. writeFile), tool_args MUST be a JSON object.
-5. For single-arg tools, tool_args is a string.
-6. NEVER use shell redirection ("echo > file") to write code. Always use writeFile.
+Tools (tool_args is a string unless noted):
+- fetchUrl(url) — GETs a URL and returns the visible text/markup (script/style/comments stripped, truncated). Use this to study the real target before generating a clone.
+- createFolder(path)
+- writeFile({"path":"...","content":"..."}) — tool_args MUST be a JSON-encoded string. Escape newlines as \\n and quotes as \\". Write the COMPLETE final file in one call.
+- writeFileBase64({"path":"...","content_base64":"..."}) — fallback for very long files where escaping JSON is fragile.
+- readFile(path), listDir(path), executeCommand(cmd)
+- getTheWeatherOfCity(city), getGithubDetailsAboutUser(username)
 
-When the user asks to clone the Scaler Academy website (scaler.com):
-- Plan a folder named "scaler-clone" containing index.html, style.css, script.js.
-- Build a real Header (Scaler-style logo, nav links like Academy/Neovarsity/Topics, Login + Book a Free Trial CTA),
-  a Hero section (large headline, subhead, primary CTA, supporting illustration or stats),
-  and a Footer (multi-column links: Company, Courses, Contact, plus social icons).
-- Use a Scaler-ish palette (dark navy #0f1c2e / blue #3b82f6 / white), modern CSS (flexbox/grid, custom properties, responsive),
-  and at least one JS interaction (mobile nav toggle, smooth scroll, or a simple counter/slider).
-- After writing files, run listDirectory on "scaler-clone" to confirm.
-- Final OUTPUT should tell the user exactly which file to open in the browser.
+Loop:
+- Turn 1: emit ONE START with a one-sentence summary of the goal.
+- Turn 2: emit ONE THINK with the plan as a numbered list.
+- Turns 3+: emit TOOL calls one at a time. After each TOOL, the runtime sends back an OBSERVE message — read it before the next step.
+- Final turn: emit OUTPUT telling the user what was produced and how to view it.
 
-Output format (one JSON object per turn):
-{ "step": "START | THINK | TOOL | OBSERVE | OUTPUT", "content": "string", "tool_name": "string", "tool_args": "string | object" }
-`;
+Never loop on THINK. After one THINK, take action. Never write skeleton files (empty <header></header>, "// TODO" placeholders, etc.) — every file must be the COMPLETE final content in one writeFile call.
 
-const LABELS = {
-  START: "[START] ",
-  THINK: "[THINK] ",
-  TOOL: "[TOOL]  ",
-  OBSERVE: "[OBS]   ",
-  OUTPUT: "[OUTPUT]",
-};
+Cloning a website:
+1. Optionally call fetchUrl on the target URL to read real headings, nav links, footer columns, palette cues.
+2. createFolder for the project (e.g. "<site>-clone" — use a slug derived from the user's request).
+3. writeFile index.html with semantic <header>, <main> hero/sections, <footer>. Real text inside real tags.
+4. writeFile style.css using CSS custom properties, flexbox/grid, at least one responsive @media block. Match the target's palette.
+5. writeFile script.js with at least one real interactive behavior whose selectors match the HTML (mobile nav toggle, smooth-scroll, theme switch, etc.).
+6. listDir on the folder to confirm.
+7. OUTPUT: tell the user the exact relative file path to open.
 
-async function runAgentTurn(messages) {
-  while (true) {
-    const response = await chatWithRetry(messages);
+Building any other site/app: same pattern — folder, html/css/js (or whatever the user asks for), confirm, output.
 
-    const content = response.choices[0].message.content;
-    let parsed;
-    try {
-      parsed = JSON.parse(content);
-    } catch {
-      messages.push({
-        role: "user",
-        content:
-          "Your last reply was not valid JSON. Reply with one JSON object using the START/THINK/TOOL/OBSERVE/OUTPUT format.",
-      });
+Example turn-by-turn:
+{"step":"START","content":"Cloning https://example.com into a static page."}
+{"step":"THINK","content":"Plan: 1) fetchUrl example.com  2) make folder  3) write index.html, style.css, script.js  4) list and report."}
+{"step":"TOOL","tool_name":"fetchUrl","tool_args":"https://example.com"}
+{"step":"TOOL","tool_name":"createFolder","tool_args":"example-clone"}
+{"step":"TOOL","tool_name":"writeFile","tool_args":"{\\"path\\":\\"example-clone/index.html\\",\\"content\\":\\"<!doctype html>...\\"}"}
+{"step":"OUTPUT","content":"Done. Open example-clone/index.html in a browser."}`;
+
+function extractJsonObjects(text) {
+  if (!text) return [];
+  const cleaned = text.replace(/```(?:json)?/gi, "").replace(/```/g, "");
+  const out = [];
+  let depth = 0;
+  let start = -1;
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < cleaned.length; i++) {
+    const ch = cleaned[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
       continue;
     }
-
-    messages.push({ role: "assistant", content: JSON.stringify(parsed) });
-
-    const step = parsed.step;
-    if (step === "START" || step === "THINK") {
-      console.log(`${LABELS[step]} ${parsed.content ?? ""}`);
-    } else if (step === "TOOL") {
-      const argPreview =
-        typeof parsed.tool_args === "string"
-          ? parsed.tool_args
-          : JSON.stringify(parsed.tool_args);
-      console.log(
-        `${LABELS.TOOL} ${parsed.tool_name}(${(argPreview || "").slice(0, 80)}${
-          argPreview && argPreview.length > 80 ? "..." : ""
-        })`
-      );
-
-      const fn = tool_map[parsed.tool_name];
-      let observation;
-      if (!fn) {
-        observation = `Tool "${parsed.tool_name}" is not available.`;
-      } else {
+    if (ch === '"') {
+      inStr = true;
+      continue;
+    }
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0 && start >= 0) {
         try {
-          observation = await fn(parsed.tool_args);
-        } catch (err) {
-          observation = `Tool error: ${err.message}`;
+          out.push(JSON.parse(cleaned.slice(start, i + 1)));
+        } catch {
+          /* skip */
         }
+        start = -1;
       }
-      const obsString =
-        typeof observation === "string" ? observation : JSON.stringify(observation);
-      console.log(
-        `${LABELS.OBSERVE} ${obsString.slice(0, 160)}${obsString.length > 160 ? "..." : ""}`
-      );
-      messages.push({
-        role: "user",
-        content: JSON.stringify({ step: "OBSERVE", content: obsString }),
+    }
+  }
+  return out;
+}
+
+function trimHistory(messages) {
+  let total = messages.reduce((n, m) => n + (m.content?.length ?? 0), 0);
+  if (total <= MAX_HISTORY_CHARS) return;
+  let lastUserIdx = -1;
+  for (let i = messages.length - 1; i >= 1; i--) {
+    if (messages[i].role === "user") {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  let i = 1;
+  while (total > MAX_HISTORY_CHARS && i < messages.length - 1) {
+    if (i === lastUserIdx) {
+      i++;
+      continue;
+    }
+    total -= messages[i].content?.length ?? 0;
+    messages.splice(i, 1);
+    if (lastUserIdx > i) lastUserIdx--;
+  }
+}
+
+let lastCallAt = 0;
+let totalCalls = 0;
+async function callModel(messages) {
+  trimHistory(messages);
+  const since = Date.now() - lastCallAt;
+  if (since < MIN_DELAY_MS) await sleep(MIN_DELAY_MS - since);
+
+  let attempt = 0;
+  while (true) {
+    try {
+      lastCallAt = Date.now();
+      totalCalls++;
+      return await client.chat.completions.create({
+        model: MODEL,
+        messages,
+        response_format: { type: "json_object" },
+        temperature: 0.3,
       });
-    } else if (step === "OUTPUT") {
-      console.log(`\n${LABELS.OUTPUT} ${parsed.content ?? ""}\n`);
-      return;
-    } else {
-      console.log("[?]", parsed);
+    } catch (err) {
+      const status = err?.status ?? err?.response?.status;
+      if (status === 429 && attempt < 5) {
+        const wait = Math.min(60_000, 5_000 * 2 ** attempt);
+        console.log(`[rate-limit] 429 — waiting ${wait / 1000}s (attempt ${attempt + 1}/5)`);
+        await sleep(wait);
+        attempt++;
+        continue;
+      }
+      if (status === 503 && attempt < 3) {
+        const wait = 8_000 * (attempt + 1);
+        console.log(`[upstream] 503 — waiting ${wait / 1000}s (attempt ${attempt + 1}/3)`);
+        await sleep(wait);
+        attempt++;
+        continue;
+      }
+      throw err;
     }
   }
 }
 
-async function main() {
-  if (!process.env.GEMINI_API_KEY) {
-    console.error("Missing GEMINI_API_KEY. Copy .env.example to .env and fill it in.");
-    process.exit(1);
+async function runAgentTurn(messages) {
+  let calls = 0;
+  let toolErrors = 0;
+
+  while (calls < MAX_TURN_CALLS) {
+    calls++;
+    const response = await callModel(messages);
+    const raw = response.choices?.[0]?.message?.content ?? "";
+    const objects = extractJsonObjects(raw);
+
+    if (!objects.length) {
+      if (calls >= 4) {
+        console.log("[!] No valid JSON in 4 attempts — aborting turn.");
+        return;
+      }
+      messages.push({
+        role: "user",
+        content:
+          'Your last reply had no parsable JSON. Reply with exactly ONE JSON object such as {"step":"TOOL","tool_name":"createFolder","tool_args":"my-site"}.',
+      });
+      continue;
+    }
+
+    messages.push({ role: "assistant", content: raw });
+
+    let producedTool = false;
+    let producedOutput = false;
+    let toolFailed = false;
+
+    for (const parsed of objects) {
+      if (!parsed.step) continue;
+      if (parsed.step === "START") {
+        console.log(`\n[START] ${parsed.content ?? ""}`);
+      } else if (parsed.step === "THINK") {
+        console.log(`[THINK] ${parsed.content ?? ""}`);
+      } else if (parsed.step === "TOOL") {
+        const argPreview =
+          typeof parsed.tool_args === "string"
+            ? parsed.tool_args
+            : JSON.stringify(parsed.tool_args ?? "");
+        console.log(`[TOOL]  ${parsed.tool_name}(${truncate(argPreview, 90)})`);
+        const fn = tool_map[parsed.tool_name];
+        let observation;
+        if (!fn) {
+          observation = `Tool "${parsed.tool_name}" is not available.`;
+          toolFailed = true;
+        } else {
+          try {
+            const result = await fn(parsed.tool_args);
+            observation = typeof result === "string" ? result : JSON.stringify(result);
+          } catch (err) {
+            observation = `Tool error: ${err.message}`;
+            toolFailed = true;
+          }
+        }
+        console.log(`[OBS]   ${truncate(observation, 200)}`);
+        messages.push({
+          role: "user",
+          content: JSON.stringify({ step: "OBSERVE", content: observation }),
+        });
+        producedTool = true;
+        break;
+      } else if (parsed.step === "OUTPUT") {
+        console.log(`\n[OUTPUT] ${parsed.content ?? ""}\n`);
+        producedOutput = true;
+        break;
+      }
+    }
+
+    if (producedOutput) return;
+    if (producedTool) {
+      toolErrors = toolFailed ? toolErrors + 1 : 0;
+      if (toolErrors >= MAX_TOOL_ERRORS) {
+        console.log(`[!] ${toolErrors} consecutive tool errors — aborting turn.`);
+        return;
+      }
+      continue;
+    }
+
+    messages.push({
+      role: "user",
+      content:
+        'Continue. Either call a tool now or emit OUTPUT if you are done. Reply with one JSON object.',
+    });
+    if (calls >= 8) {
+      console.log("[!] Too many think-only turns — aborting.");
+      return;
+    }
   }
+  console.log(`[!] Hit ${MAX_TURN_CALLS}-call cap for this turn.`);
+}
 
-  const rl = readline.createInterface({ input, output });
+async function main() {
   const messages = [{ role: "system", content: SYSTEM_PROMPT }];
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const ask = () => new Promise((res) => rl.question("you > ", (l) => res(l)));
 
-  console.log("Scaler Clone Agent — chat with the agent. Type 'exit' to quit.");
-  console.log("Try: 'clone the scaler academy website'\n");
+  console.log("AI Agent CLI — chat with the agent. Type 'exit' to quit.");
+  console.log(`Model: ${MODEL}`);
+  console.log('Try: "clone https://www.scaler.com" or "build a portfolio site for a designer".\n');
 
   while (true) {
-    let userInput;
-    try {
-      userInput = (await rl.question("you > ")).trim();
-    } catch {
-      break;
+    const line = (await ask()).trim();
+    if (!line) continue;
+    if (["exit", "quit", ":q"].includes(line.toLowerCase())) {
+      rl.close();
+      console.log(`bye. (model calls this session: ${totalCalls})`);
+      return;
     }
-    if (!userInput) continue;
-    if (userInput === "exit" || userInput === "quit") break;
-
-    messages.push({ role: "user", content: userInput });
+    messages.push({ role: "user", content: line });
     try {
       await runAgentTurn(messages);
     } catch (err) {
-      console.error("Agent error:", err.message);
+      console.error(`\n[error] ${err.message}\n`);
     }
+    console.log(`(model calls so far: ${totalCalls})`);
   }
-
-  rl.close();
 }
 
 main().catch((err) => {

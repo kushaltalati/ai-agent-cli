@@ -1,7 +1,7 @@
 {
-  "name": "scaler-clone-agent",
+  "name": "ai-agent-cli",
   "version": "1.0.0",
-  "description": "Conversational CLI agent that clones the Scaler Academy website using HTML/CSS/JS.",
+  "description": "Conversational CLI AI agent that reasons in START/THINK/TOOL/OBSERVE/OUTPUT steps and writes real files. Demo task: clone the Scaler Academy website.",
   "type": "module",
   "main": "index.js",
   "scripts": {
