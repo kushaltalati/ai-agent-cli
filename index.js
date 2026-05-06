@@ -245,6 +245,7 @@ CONTENT QUALITY (hard requirements — the writeFile tool will reject undersized
 - index.html MUST be ≥2500 characters with COMPLETE markup. No empty <header></header> or <section></section>. Real headings, real paragraphs, real nav links, real footer columns. Use semantic tags.
 - style.css MUST be ≥1500 characters with rules for every class referenced in the HTML, CSS custom properties for the palette, flex/grid layouts, hover states, and at least one responsive @media block.
 - script.js MUST have at least one real interactive behavior whose selectors actually exist in the HTML (mobile nav toggle, smooth-scroll, project filter, theme switch, etc.).
+- LINKS MUST BE REAL when cloning a real site. Never use href="#" for nav/footer items. If you fetched the target URL, use the real absolute URLs you read (or sensible deep links like https://www.example.com/about). Social icons must point to actual social profiles when known, not "#".
 
 Cloning a website:
 1. Optionally call fetchUrl on the target URL to read real headings, nav links, footer columns, palette cues.
@@ -463,7 +464,7 @@ async function main() {
 
   console.log("AI Agent CLI — chat with the agent. Type 'exit' to quit.");
   console.log(`Model: ${MODEL}`);
-  console.log('Try: "clone https://www.scaler.com" or "build a portfolio site for a designer".\n');
+  console.log('Try: "clone <any-url>" or "build a <type> site for <whom>".\n');
 
   while (true) {
     const line = (await ask()).trim();
