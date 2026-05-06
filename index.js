@@ -104,8 +104,31 @@ async function fetchUrl(args) {
   return stripped.length > cap ? stripped.slice(0, cap) + "…[truncated]" : stripped;
 }
 
+function parseArgs(args) {
+  if (args == null) return {};
+  if (typeof args === "object") return args;
+  if (typeof args !== "string") return {};
+  const trimmed = args.trim().replace(/^['"]|['"]$/g, "");
+  if (trimmed.startsWith("{")) {
+    try {
+      const obj = JSON.parse(trimmed);
+      if (obj && typeof obj === "object") return obj;
+    } catch {
+      // fall through
+    }
+  }
+  return { _raw: trimmed };
+}
+
+function pathFromArgs(args) {
+  const a = parseArgs(args);
+  return a.path || a.dir || a.folder || a.url || a._raw || "";
+}
+
 async function createFolder(args) {
-  const target = safePath(typeof args === "string" ? args : args?.path || "");
+  const p = pathFromArgs(args);
+  if (!p) throw new Error("createFolder needs a path");
+  const target = safePath(p);
   await fs.mkdir(target, { recursive: true });
   return `Folder ready: ${path.relative(PROJECT_ROOT, target) || "."}`;
 }
@@ -213,13 +236,16 @@ async function writeFileBase64(args) {
 }
 
 async function readFileTool(args) {
-  const target = safePath(typeof args === "string" ? args : args?.path || "");
+  const p = pathFromArgs(args);
+  if (!p) throw new Error("readFile needs a path");
+  const target = safePath(p);
   const data = await fs.readFile(target, "utf8");
   return data.length > 4000 ? data.slice(0, 4000) + "\n…[truncated]" : data;
 }
 
 async function listDir(args) {
-  const target = safePath(typeof args === "string" ? args || "." : args?.path || ".");
+  const p = pathFromArgs(args) || ".";
+  const target = safePath(p);
   const entries = await fs.readdir(target, { withFileTypes: true });
   return entries.map((e) => (e.isDirectory() ? `${e.name}/` : e.name)).join("\n");
 }
@@ -425,9 +451,8 @@ async function runAgentTurn(messages) {
         });
         if (!toolFailed) {
           if (parsed.tool_name === "createFolder") {
-            const a = parseArgs(parsed.tool_args);
-            const p = a.path || a._raw || parsed.tool_args;
-            if (typeof p === "string") created.folders.add(p);
+            const p = pathFromArgs(parsed.tool_args);
+            if (p) created.folders.add(p);
           }
           if (parsed.tool_name === "writeFile" || parsed.tool_name === "writeFileBase64") {
             const a = coerceWriteArgs(parsed.tool_args);
