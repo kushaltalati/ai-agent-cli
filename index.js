@@ -191,20 +191,20 @@ async function writeFile(args) {
   const lower = parsed.path.toLowerCase();
   const trimmed = parsed.content.trim();
   if (lower.endsWith(".html")) {
-    if (trimmed.length < 2500) {
+    if (trimmed.length < 1500) {
       throw new Error(
-        `HTML too short (${trimmed.length} chars). Re-emit writeFile with the COMPLETE markup — every section fully populated, ≥2500 chars. No skeletons or one-line files.`
+        `HTML too short (${trimmed.length} chars, need ≥1500). Re-emit with full header, hero, sections, and footer.`
       );
     }
     if (/<(header|main|footer|section|nav)>\s*<\/\1>/i.test(trimmed)) {
       throw new Error(
-        "HTML contains empty semantic tags (e.g. <header></header>). Fill every section with real content and re-emit writeFile."
+        "HTML has empty semantic tags. Fill every section with real content."
       );
     }
   }
-  if (lower.endsWith(".css") && trimmed.length < 1500) {
+  if (lower.endsWith(".css") && trimmed.length < 800) {
     throw new Error(
-      `CSS too short (${trimmed.length} chars). Provide complete styles for every component referenced in the HTML — header, hero, sections, footer, plus a responsive @media block. Re-emit writeFile with ≥1500 chars.`
+      `CSS too short (${trimmed.length} chars, need ≥800). Add styles for header, hero, sections, footer, plus a @media block.`
     );
   }
   const target = safePath(parsed.path);
@@ -449,23 +449,25 @@ async function runAgentTurn(messages) {
           role: "user",
           content: JSON.stringify({ step: "OBSERVE", content: observation }),
         });
-        if (!toolFailed) {
-          if (parsed.tool_name === "createFolder") {
-            const p = pathFromArgs(parsed.tool_args);
-            if (p) created.folders.add(p);
-          }
-          if (parsed.tool_name === "writeFile" || parsed.tool_name === "writeFileBase64") {
+        if (parsed.tool_name === "writeFile" || parsed.tool_name === "writeFileBase64") {
+          if (!toolFailed) {
             const a = coerceWriteArgs(parsed.tool_args);
             if (a?.path) created.files.add(a.path);
-            const last = messages[messages.length - 2];
-            if (last?.role === "assistant") {
-              last.content = JSON.stringify({
-                step: "TOOL",
-                tool_name: parsed.tool_name,
-                note: `[content omitted from history to save tokens — file written successfully]`,
-              });
-            }
           }
+          const last = messages[messages.length - 2];
+          if (last?.role === "assistant") {
+            last.content = JSON.stringify({
+              step: "TOOL",
+              tool_name: parsed.tool_name,
+              note: toolFailed
+                ? "[content omitted from history — write failed, see OBSERVE]"
+                : "[content omitted from history — file written successfully]",
+            });
+          }
+        }
+        if (!toolFailed && parsed.tool_name === "createFolder") {
+          const p = pathFromArgs(parsed.tool_args);
+          if (p) created.folders.add(p);
         }
         producedTool = true;
         break;
