@@ -191,26 +191,47 @@ async function writeFile(args) {
   const lower = parsed.path.toLowerCase();
   const trimmed = parsed.content.trim();
   if (lower.endsWith(".html")) {
-    if (trimmed.length < 600) {
+    if (trimmed.length < 2000) {
       throw new Error(
-        `HTML too short (${trimmed.length} chars). At minimum include doctype, head, header, main, footer. Or call appendFile to add more content after this write.`
+        `HTML too short (${trimmed.length} chars, need >=2000). A real page needs: doctype, head with title + meta viewport + link to ./style.css, body with <nav>, <header> hero (big heading + tagline + CTA), <main> containing AT LEAST 3 <section> blocks (e.g. about, services/skills, contact) each with a heading and 2-3 paragraphs or a list/cards, and <footer>. Write the full first draft in one writeFile, then use appendFile only to add extras.`
       );
     }
-    if (/<(header|main|footer)>\s*<\/\1>/i.test(trimmed)) {
+    if (/<(header|main|footer|section)>\s*<\/\1>/i.test(trimmed)) {
       throw new Error(
-        "HTML has empty <header></header> or <main></main> or <footer></footer>. Put real content inside each."
+        "HTML has an empty <header>, <main>, <footer>, or <section>. Put real content (headings, paragraphs, lists, cards) inside each."
       );
     }
-    if (/\/_next\/|\/storyblok-assets\/|data-dpl-id=/i.test(trimmed)) {
+    const sectionCount = (trimmed.match(/<section\b/gi) || []).length;
+    if (sectionCount < 3) {
       throw new Error(
-        "Do not paste raw fetchUrl output (Next.js / Storyblok asset paths detected). Write fresh markup. Link only to ./style.css and ./script.js."
+        `HTML only has ${sectionCount} <section> block(s). Include at least 3 distinct sections inside <main> (e.g. About, Services/Skills/Experience, Contact) — each with a heading and real content.`
+      );
+    }
+    if (!/<nav\b/i.test(trimmed)) {
+      throw new Error("HTML is missing a <nav>. Include a navigation bar with links to the page sections (#about, #services, #contact, etc.).");
+    }
+    if (
+      /\/_next\/|\/storyblok-assets\/|data-dpl-id=|githubassets\.com|data-color-mode=|data-a11y-|fbcdn\.net|cdn\.jsdelivr\.net.*hash|integrity="sha/i.test(
+        trimmed
+      )
+    ) {
+      throw new Error(
+        "Looks like raw fetched HTML (CDN/asset markers detected). Write fresh, hand-coded markup with semantic tags and link only to ./style.css and ./script.js — don't paste the page back."
       );
     }
   }
-  if (lower.endsWith(".css") && trimmed.length < 250) {
-    throw new Error(
-      `CSS too short (${trimmed.length} chars). Style at least the header, hero/main, and footer. Or append more later with appendFile.`
-    );
+  if (lower.endsWith(".css")) {
+    if (trimmed.length < 800) {
+      throw new Error(
+        `CSS too short (${trimmed.length} chars, need >=800). Include: a CSS reset/box-sizing, body typography + background, a color palette (use CSS variables), nav styling, hero section with large heading + CTA button (with hover state), section spacing + headings, a card/grid layout for one section, footer styling, and at least one @media query for mobile. Use appendFile for more.`
+      );
+    }
+    if (!/@media\b/i.test(trimmed)) {
+      throw new Error("CSS has no @media query. Add at least one breakpoint (e.g. @media (max-width: 720px)) so the layout works on mobile.");
+    }
+    if (!/:hover\b/i.test(trimmed)) {
+      throw new Error("CSS has no :hover state. Add hover styles on buttons and nav links so the page feels interactive.");
+    }
   }
   const target = safePath(parsed.path);
   await fs.mkdir(path.dirname(target), { recursive: true });
@@ -323,26 +344,60 @@ async function buildSystemPrompt() {
     ? `- scaffoldClone(name): copy a ready-made template from templates/<name>/ into <name>-clone/. Available templates: ${templates.map((t) => `"${t}"`).join(", ")}. Use this when the user asks for one of these sites.`
     : `- scaffoldClone(name): copy a ready-made template from templates/<name>/ into <name>-clone/. (No templates installed yet.)`;
 
-  return `You are an AI coding agent that writes real files on disk.
+  return `You are an AI coding agent that writes real, production-quality static websites on disk.
 Reply with EXACTLY ONE JSON object per turn. No prose, no markdown fences.
 Shape: {"step":"START|THINK|TOOL|OUTPUT","content":"...","tool_name":"...","tool_args":"..."}
 
 Tools:
 - fetchUrl(url): GET a URL, returns stripped HTML/text. Use this to read a site before cloning it.
 - createFolder(path)
-- writeFile(JSON-string {"path":"...","content":"..."}): write a file. HTML must be at least 600 chars (header+main+footer), CSS at least 250. Escape newlines as \\n. Don't paste raw fetchUrl output. Link only to ./style.css and ./script.js.
-- appendFile(JSON-string {"path":"...","content":"..."}): add more content to a file you already wrote. Use this to grow a file in chunks if writing it all at once would be too large.
+- writeFile(JSON-string {"path":"...","content":"..."}): write a file. Escape newlines as \\n. Don't paste raw fetchUrl output. Link only to ./style.css and ./script.js.
+- appendFile(JSON-string {"path":"...","content":"..."}): add more content to a file you already wrote. Useful for building bigger pages in chunks.
 ${templateLine}
 - readFile(path), listDir(path), executeCommand(cmd)
 - getTheWeatherOfCity(city), getGithubDetailsAboutUser(user)
 
 Loop: one START, then one THINK, then TOOL calls one at a time (wait for OBSERVE between each), then OUTPUT. Don't keep thinking, take action.
 
-Folder name comes from the user's request. "clone scaler.com" -> "scaler-clone". "build a portfolio for jane" -> "jane-portfolio".
+Folder name comes from the user's request. "clone scaler.com" -> "scaler-clone". "build a portfolio for jane" -> "jane-portfolio". "doctor portfolio" -> "doctor-portfolio".
 
-To clone a website:
-- If a template exists for it, do fetchUrl -> scaffoldClone(name) -> listDir -> OUTPUT.
-- Otherwise: fetchUrl -> createFolder -> writeFile index.html -> writeFile style.css -> writeFile script.js -> listDir -> OUTPUT.
+QUALITY BAR — every site you build (portfolio, landing page, clone) MUST include all three files: index.html, style.css, script.js. A site without CSS is a failure. Never emit OUTPUT until all three exist.
+
+index.html requirements (>=2000 chars):
+- <!doctype html>, <html lang="en">, <head> with <title>, <meta charset>, <meta viewport>, <link rel="stylesheet" href="./style.css">
+- <nav> with brand/logo + links to in-page anchors (#about, #services, #contact)
+- <header> hero with a big <h1>, a tagline <p>, and a call-to-action <a class="btn">
+- <main> with AT LEAST 3 <section id="..."> blocks. For a portfolio: About (bio + photo placeholder), Services or Skills or Experience (3+ cards/items in a grid), Contact (email, phone, social links or a form). For a landing page: Features, How it works, Testimonials/Pricing, CTA.
+- Real, specific placeholder content for the persona (e.g. for a doctor: specialty, years of experience, qualifications, clinic address, appointment hours, testimonials from patients) — never write "Welcome to my portfolio" filler.
+- <footer> with copyright + secondary links.
+- <script src="./script.js"></script> at end of body.
+
+style.css requirements (>=800 chars):
+- CSS reset / box-sizing border-box, smooth-scroll on html.
+- :root with 4-6 CSS variables for the color palette (primary, accent, bg, text, muted, surface). Pick a palette that fits the persona (e.g. doctor = calm blues/greens, designer = bold accents).
+- Typography: import or stack a real Google font, set base font-size, line-height, headings.
+- Nav: flex layout, sticky or fixed, links with :hover.
+- Hero: full-width, large padding, gradient or solid background, big heading, CTA button with :hover transform/shadow.
+- Sections: consistent vertical rhythm, max-width container, section headings.
+- A grid (display: grid) for the cards section with hover lift.
+- Footer styling.
+- At least one @media (max-width: 720px) {...} block stacking nav + grid for mobile.
+
+script.js requirements: at minimum a mobile-nav toggle OR smooth-scroll for anchor links OR a simple scroll-reveal — something that runs and adds interactivity. Don't leave it empty.
+
+Build flow (use this exactly when the user asks to BUILD a site from scratch):
+1. createFolder(<name>-portfolio or <name>-site)
+2. writeFile <folder>/index.html  (full page, hits the quality bar above)
+3. writeFile <folder>/style.css   (full stylesheet, hits the quality bar above)
+4. writeFile <folder>/script.js   (real interactivity)
+5. listDir(<folder>)
+6. OUTPUT
+
+Clone flow (when user asks to CLONE a real URL):
+- If a template exists for it: fetchUrl -> scaffoldClone(name) -> listDir -> OUTPUT.
+- Otherwise: fetchUrl -> createFolder -> writeFile index.html -> writeFile style.css -> writeFile script.js -> listDir -> OUTPUT (same quality bar).
+
+If a writeFile call is rejected for being too short or missing a section/nav/@media/:hover, DO NOT shrug and emit OUTPUT — rewrite the file with the missing pieces and call writeFile again.
 
 Example tool call:
 {"step":"TOOL","tool_name":"writeFile","tool_args":"{\\"path\\":\\"site/index.html\\",\\"content\\":\\"<!doctype html>...\\"}"}`;

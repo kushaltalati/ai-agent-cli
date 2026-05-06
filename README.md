@@ -83,7 +83,7 @@ A few small things that took some iteration to get right:
 - Lenient `writeFile` parser. Smaller models sometimes break JSON escaping on big HTML payloads, so the parser falls back to a regex extract if `JSON.parse` fails.
 - After every successful `writeFile`, the assistant message holding the giant content is replaced with a short "[content omitted]" note. Otherwise the conversation history doubles every file you write and you hit token limits inside three calls.
 - Throttle plus exponential backoff on 429s. Groq surfaces the actual reason (TPM, TPD, etc.) in the body so you can see what's happening.
-- HTML must be at least ~1500 chars and CSS at least ~800 to count as written. Below that the model gets a "too short, try again" error and re-emits.
+- writeFile rejects files that don't meet a quality bar: HTML needs at least 2000 chars with a nav, hero, three sections, and footer; CSS needs at least 800 chars with a media query and hover state; script.js has to actually exist. The model gets the rejection back as an OBSERVE message and rewrites the file properly.
 
 ## Project layout
 
@@ -108,4 +108,4 @@ ai-agent-cli/
 ## Submission
 
 - GitHub: https://github.com/kushaltalati/ai-agent-cli
-- YouTube: _add link here_
+- YouTube: https://youtu.be/n0Wcv-BZwoE
