@@ -49,8 +49,8 @@ ai-agent-cli/
 ## Setup
 
 ```bash
-git clone https://github.com/kushaltalati/scaler-clone-agent.git
-cd scaler-clone-agent
+git clone https://github.com/kushaltalati/ai-agent-cli.git
+cd ai-agent-cli
 npm install
 cp .env.example .env
 # open .env and paste your free Groq key from https://console.groq.com/keys
@@ -141,7 +141,7 @@ Path safety: every `writeFile` / `readFile` / `createFolder` resolves under `pro
 - [x] Reasoning loop with multiple steps and tool calls
 - [x] Generates real `index.html`, `style.css`, `script.js`
 - [x] Output resembles scaler.com (header + hero + footer, dark navy/blue palette, responsive)
-- [x] Public GitHub repo: https://github.com/kushaltalati/scaler-clone-agent
+- [x] Public GitHub repo: https://github.com/kushaltalati/ai-agent-cli
 - [ ] YouTube demo video (2–3 min): _add link here_
 
 ---
