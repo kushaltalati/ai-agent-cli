@@ -100,7 +100,7 @@ async function fetchUrl(args) {
     .replace(/<!--[\s\S]*?-->/g, "")
     .replace(/\s+/g, " ")
     .trim();
-  const cap = 8000;
+  const cap = 2500;
   return stripped.length > cap ? stripped.slice(0, cap) + "…[truncated]" : stripped;
 }
 
