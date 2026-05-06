@@ -68,8 +68,25 @@ function executeCommand(cmd = "") {
 }
 
 async function fetchUrl(args) {
-  const url = typeof args === "string" ? args.trim().replace(/^['"]|['"]$/g, "") : args?.url;
-  if (!url) return "fetchUrl needs a URL string.";
+  let url;
+  if (typeof args === "object" && args) {
+    url = args.url || args.path || args._raw;
+  } else if (typeof args === "string") {
+    const trimmed = args.trim().replace(/^['"]|['"]$/g, "");
+    if (trimmed.startsWith("{")) {
+      try {
+        const obj = JSON.parse(trimmed);
+        url = obj.url || obj.path;
+      } catch {
+        url = trimmed;
+      }
+    } else {
+      url = trimmed;
+    }
+  }
+  if (!url || !/^https?:\/\//i.test(url)) {
+    return `fetchUrl needs a URL starting with http:// or https://. Got: ${truncate(String(url), 80)}`;
+  }
   const { data } = await axios.get(url, {
     timeout: 15_000,
     headers: { "User-Agent": "Mozilla/5.0 (compatible; ai-agent-cli/1.0)" },
