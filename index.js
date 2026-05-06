@@ -148,6 +148,25 @@ async function writeFile(args) {
   if (!parsed?.path || parsed.content == null) {
     throw new Error('writeFile needs {"path":"...","content":"..."}');
   }
+  const lower = parsed.path.toLowerCase();
+  const trimmed = parsed.content.trim();
+  if (lower.endsWith(".html")) {
+    if (trimmed.length < 2500) {
+      throw new Error(
+        `HTML too short (${trimmed.length} chars). Re-emit writeFile with the COMPLETE markup — every section fully populated, ≥2500 chars. No skeletons or one-line files.`
+      );
+    }
+    if (/<(header|main|footer|section|nav)>\s*<\/\1>/i.test(trimmed)) {
+      throw new Error(
+        "HTML contains empty semantic tags (e.g. <header></header>). Fill every section with real content and re-emit writeFile."
+      );
+    }
+  }
+  if (lower.endsWith(".css") && trimmed.length < 1500) {
+    throw new Error(
+      `CSS too short (${trimmed.length} chars). Provide complete styles for every component referenced in the HTML — header, hero, sections, footer, plus a responsive @media block. Re-emit writeFile with ≥1500 chars.`
+    );
+  }
   const target = safePath(parsed.path);
   await fs.mkdir(path.dirname(target), { recursive: true });
   await fs.writeFile(target, parsed.content, "utf8");
@@ -222,16 +241,21 @@ Loop:
 
 Never loop on THINK. After one THINK, take action. Never write skeleton files (empty <header></header>, "// TODO" placeholders, etc.) — every file must be the COMPLETE final content in one writeFile call.
 
+CONTENT QUALITY (hard requirements — the writeFile tool will reject undersized files):
+- index.html MUST be ≥2500 characters with COMPLETE markup. No empty <header></header> or <section></section>. Real headings, real paragraphs, real nav links, real footer columns. Use semantic tags.
+- style.css MUST be ≥1500 characters with rules for every class referenced in the HTML, CSS custom properties for the palette, flex/grid layouts, hover states, and at least one responsive @media block.
+- script.js MUST have at least one real interactive behavior whose selectors actually exist in the HTML (mobile nav toggle, smooth-scroll, project filter, theme switch, etc.).
+
 Cloning a website:
 1. Optionally call fetchUrl on the target URL to read real headings, nav links, footer columns, palette cues.
 2. createFolder for the project (e.g. "<site>-clone" — use a slug derived from the user's request).
-3. writeFile index.html with semantic <header>, <main> hero/sections, <footer>. Real text inside real tags.
-4. writeFile style.css using CSS custom properties, flexbox/grid, at least one responsive @media block. Match the target's palette.
-5. writeFile script.js with at least one real interactive behavior whose selectors match the HTML (mobile nav toggle, smooth-scroll, theme switch, etc.).
+3. writeFile index.html — full structure: header with logo + nav, hero with big headline + subhead + CTA, 2–3 content sections, multi-column footer.
+4. writeFile style.css — palette via :root vars, header layout, hero styling, section styling, footer grid, responsive media query.
+5. writeFile script.js — real interactive behavior with working selectors.
 6. listDir on the folder to confirm.
 7. OUTPUT: tell the user the exact relative file path to open.
 
-Building any other site/app: same pattern — folder, html/css/js (or whatever the user asks for), confirm, output.
+Building any other site/app: same content-quality bar applies. Generate substantial, finished pages — never skeletons.
 
 Example turn-by-turn:
 {"step":"START","content":"Cloning https://example.com into a static page."}
