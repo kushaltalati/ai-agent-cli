@@ -250,6 +250,8 @@ Tools:
 Loop: 1 START → 1 THINK → TOOLs (wait for OBSERVE between each) → OUTPUT.
 Don't repeat THINK. Take action.
 
+Folder name comes from the user's request (slug it). "clone scaler.com" → "scaler-clone". "build a portfolio for jane" → "jane-portfolio". Never invent fixed names.
+
 For a website clone: fetchUrl → createFolder → writeFile index.html (header+hero+sections+footer) → writeFile style.css (vars, flex/grid, @media) → writeFile script.js (working selectors) → listDir → OUTPUT.
 
 Example:
@@ -363,6 +365,7 @@ async function callModel(messages) {
 async function runAgentTurn(messages) {
   let calls = 0;
   let toolErrors = 0;
+  const created = { folders: new Set(), files: new Set() };
 
   while (calls < MAX_TURN_CALLS) {
     calls++;
@@ -420,23 +423,45 @@ async function runAgentTurn(messages) {
           role: "user",
           content: JSON.stringify({ step: "OBSERVE", content: observation }),
         });
-        if (
-          !toolFailed &&
-          (parsed.tool_name === "writeFile" || parsed.tool_name === "writeFileBase64")
-        ) {
-          const last = messages[messages.length - 2];
-          if (last?.role === "assistant") {
-            last.content = JSON.stringify({
-              step: "TOOL",
-              tool_name: parsed.tool_name,
-              note: `[content omitted from history to save tokens — file written successfully]`,
-            });
+        if (!toolFailed) {
+          if (parsed.tool_name === "createFolder") {
+            const a = parseArgs(parsed.tool_args);
+            const p = a.path || a._raw || parsed.tool_args;
+            if (typeof p === "string") created.folders.add(p);
+          }
+          if (parsed.tool_name === "writeFile" || parsed.tool_name === "writeFileBase64") {
+            const a = coerceWriteArgs(parsed.tool_args);
+            if (a?.path) created.files.add(a.path);
+            const last = messages[messages.length - 2];
+            if (last?.role === "assistant") {
+              last.content = JSON.stringify({
+                step: "TOOL",
+                tool_name: parsed.tool_name,
+                note: `[content omitted from history to save tokens — file written successfully]`,
+              });
+            }
           }
         }
         producedTool = true;
         break;
       } else if (parsed.step === "OUTPUT") {
         console.log(`\n[OUTPUT] ${parsed.content ?? ""}\n`);
+        if (created.files.size || created.folders.size) {
+          console.log("Files created in this run:");
+          for (const f of created.files) {
+            const abs = path.resolve(PROJECT_ROOT, f);
+            console.log(`  ${abs}`);
+          }
+          if (created.files.size === 0) {
+            for (const d of created.folders) {
+              console.log(`  ${path.resolve(PROJECT_ROOT, d)}/`);
+            }
+          }
+          const firstHtml = [...created.files].find((p) => p.toLowerCase().endsWith(".html"));
+          if (firstHtml) {
+            console.log(`\nOpen in browser:  open "${path.resolve(PROJECT_ROOT, firstHtml)}"\n`);
+          }
+        }
         producedOutput = true;
         break;
       }
