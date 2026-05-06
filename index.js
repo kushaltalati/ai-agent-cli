@@ -14,11 +14,11 @@ if (!process.env.GROQ_API_KEY) {
 }
 
 const MODEL = process.env.MODEL || "llama-3.3-70b-versatile";
-const MIN_DELAY_MS = Number(process.env.MIN_DELAY_MS || 1500);
+const MIN_DELAY_MS = Number(process.env.MIN_DELAY_MS || 3000);
 const PROJECT_ROOT = process.cwd();
 const MAX_TURN_CALLS = 30;
 const MAX_TOOL_ERRORS = 4;
-const MAX_HISTORY_CHARS = 60_000;
+const MAX_HISTORY_CHARS = 20_000;
 
 const client = new OpenAI({
   apiKey: process.env.GROQ_API_KEY,
@@ -425,6 +425,19 @@ async function runAgentTurn(messages) {
           role: "user",
           content: JSON.stringify({ step: "OBSERVE", content: observation }),
         });
+        if (
+          !toolFailed &&
+          (parsed.tool_name === "writeFile" || parsed.tool_name === "writeFileBase64")
+        ) {
+          const last = messages[messages.length - 2];
+          if (last?.role === "assistant") {
+            last.content = JSON.stringify({
+              step: "TOOL",
+              tool_name: parsed.tool_name,
+              note: `[content omitted from history to save tokens — file written successfully]`,
+            });
+          }
+        }
         producedTool = true;
         break;
       } else if (parsed.step === "OUTPUT") {
