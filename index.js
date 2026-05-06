@@ -201,6 +201,11 @@ async function writeFile(args) {
         "HTML has empty semantic tags. Fill every section with real content."
       );
     }
+    if (/\/_next\/|\/storyblok-assets\/|data-dpl-id=/i.test(trimmed)) {
+      throw new Error(
+        "Do NOT copy the raw fetchUrl output (Next.js / Storyblok asset paths detected). Write FRESH HTML inspired by the page's text content. Link only to ./style.css and ./script.js. Use absolute https URLs for any external image/links."
+      );
+    }
   }
   if (lower.endsWith(".css") && trimmed.length < 800) {
     throw new Error(
@@ -250,6 +255,36 @@ async function listDir(args) {
   return entries.map((e) => (e.isDirectory() ? `${e.name}/` : e.name)).join("\n");
 }
 
+async function scaffoldClone(args) {
+  const a = parseArgs(args);
+  const raw = String(a.name || a.site || a.path || a._raw || "").toLowerCase();
+  const available = await fs.readdir(safePath("templates")).catch(() => []);
+  const candidates = [
+    raw,
+    raw.replace(/\.(com|org|io|in|net|co)\/?$/i, ""),
+    raw.replace(/^https?:\/\//, "").replace(/^www\./, ""),
+    raw.replace(/-clone$/, ""),
+    raw.replace(/_clone$/, ""),
+    raw.split(/[\/.\s-]/)[0],
+  ]
+    .map((s) => s.replace(/[^a-z0-9]/g, ""))
+    .filter(Boolean);
+  const name = candidates.find((c) => available.includes(c));
+  if (!name) {
+    throw new Error(
+      `No template matched "${raw}". Available templates: ${available.join(", ") || "(none)"}. Call scaffoldClone with one of those exact names.`
+    );
+  }
+  const templatesDir = safePath(`templates/${name}`);
+  const entries = await fs.readdir(templatesDir);
+  const destDir = safePath(`${name}-clone`);
+  await fs.mkdir(destDir, { recursive: true });
+  for (const f of entries) {
+    await fs.copyFile(path.join(templatesDir, f), path.join(destDir, f));
+  }
+  return `Scaffolded ${entries.length} polished files into ${name}-clone/ from templates/${name}/`;
+}
+
 const tool_map = {
   getTheWeatherOfCity,
   getGithubDetailsAboutUser,
@@ -260,6 +295,7 @@ const tool_map = {
   writeFileBase64,
   readFile: readFileTool,
   listDir,
+  scaffoldClone,
 };
 
 const SYSTEM_PROMPT = `You are an AI coding agent that writes real files on disk.
@@ -269,7 +305,8 @@ Shape: {"step":"START|THINK|TOOL|OUTPUT","content":"...","tool_name":"...","tool
 Tools:
 - fetchUrl(url): GET a URL, returns stripped HTML/text. Use before cloning.
 - createFolder(path)
-- writeFile(JSON-string {"path":"...","content":"..."}): write COMPLETE final file. HTML ≥2500 chars, CSS ≥1500 chars, no skeletons, no empty tags. Real URLs (no href="#") when cloning real sites.
+- writeFile(JSON-string {"path":"...","content":"..."}): write COMPLETE final file. HTML ≥1500 chars, CSS ≥800 chars, no skeletons. Escape newlines as \\n inside content. NEVER paste raw fetchUrl output. Link only to ./style.css and ./script.js.
+- scaffoldClone(name): copy a polished pre-built template into <name>-clone/ instantly. Available: "scaler". USE THIS for known sites instead of writeFile.
 - readFile(path), listDir(path), executeCommand(cmd)
 - getTheWeatherOfCity(city), getGithubDetailsAboutUser(user)
 
@@ -278,7 +315,9 @@ Don't repeat THINK. Take action.
 
 Folder name comes from the user's request (slug it). "clone scaler.com" → "scaler-clone". "build a portfolio for jane" → "jane-portfolio". Never invent fixed names.
 
-For a website clone: fetchUrl → createFolder → writeFile index.html (header+hero+sections+footer) → writeFile style.css (vars, flex/grid, @media) → writeFile script.js (working selectors) → listDir → OUTPUT.
+For a website clone:
+- KNOWN SITE (scaler): fetchUrl → scaffoldClone(name) → listDir → OUTPUT. Done in 4 tool calls.
+- UNKNOWN SITE: fetchUrl → createFolder → writeFile index.html → writeFile style.css → writeFile script.js → listDir → OUTPUT.
 
 Example:
 {"step":"TOOL","tool_name":"writeFile","tool_args":"{\\"path\\":\\"site/index.html\\",\\"content\\":\\"<!doctype html>...\\"}"}`;
