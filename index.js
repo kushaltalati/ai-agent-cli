@@ -315,12 +315,18 @@ async function callModel(messages) {
         messages,
         response_format: { type: "json_object" },
         temperature: 0.3,
+        max_tokens: 4000,
       });
     } catch (err) {
       const status = err?.status ?? err?.response?.status;
+      const body = err?.error?.message || err?.message || "";
       if (status === 429 && attempt < 5) {
         const wait = Math.min(60_000, 5_000 * 2 ** attempt);
-        console.log(`[rate-limit] 429 — waiting ${wait / 1000}s (attempt ${attempt + 1}/5)`);
+        console.log(
+          `[rate-limit] 429 — waiting ${wait / 1000}s (attempt ${attempt + 1}/5)${
+            body ? `\n         ${truncate(body, 200)}` : ""
+          }`
+        );
         await sleep(wait);
         attempt++;
         continue;
