@@ -191,31 +191,43 @@ async function writeFile(args) {
   const lower = parsed.path.toLowerCase();
   const trimmed = parsed.content.trim();
   if (lower.endsWith(".html")) {
-    if (trimmed.length < 1500) {
+    if (trimmed.length < 600) {
       throw new Error(
-        `HTML too short (${trimmed.length} chars, need ≥1500). Re-emit with full header, hero, sections, and footer.`
+        `HTML too short (${trimmed.length} chars). At minimum include doctype, head, header, main, footer. Or call appendFile to add more content after this write.`
       );
     }
-    if (/<(header|main|footer|section|nav)>\s*<\/\1>/i.test(trimmed)) {
+    if (/<(header|main|footer)>\s*<\/\1>/i.test(trimmed)) {
       throw new Error(
-        "HTML has empty semantic tags. Fill every section with real content."
+        "HTML has empty <header></header> or <main></main> or <footer></footer>. Put real content inside each."
       );
     }
     if (/\/_next\/|\/storyblok-assets\/|data-dpl-id=/i.test(trimmed)) {
       throw new Error(
-        "Do NOT copy the raw fetchUrl output (Next.js / Storyblok asset paths detected). Write FRESH HTML inspired by the page's text content. Link only to ./style.css and ./script.js. Use absolute https URLs for any external image/links."
+        "Do not paste raw fetchUrl output (Next.js / Storyblok asset paths detected). Write fresh markup. Link only to ./style.css and ./script.js."
       );
     }
   }
-  if (lower.endsWith(".css") && trimmed.length < 800) {
+  if (lower.endsWith(".css") && trimmed.length < 250) {
     throw new Error(
-      `CSS too short (${trimmed.length} chars, need ≥800). Add styles for header, hero, sections, footer, plus a @media block.`
+      `CSS too short (${trimmed.length} chars). Style at least the header, hero/main, and footer. Or append more later with appendFile.`
     );
   }
   const target = safePath(parsed.path);
   await fs.mkdir(path.dirname(target), { recursive: true });
   await fs.writeFile(target, parsed.content, "utf8");
   return `Wrote ${parsed.content.length} bytes → ${parsed.path}`;
+}
+
+async function appendFile(args) {
+  const parsed = coerceWriteArgs(args);
+  if (!parsed?.path || parsed.content == null) {
+    throw new Error('appendFile needs {"path":"...","content":"..."}');
+  }
+  const target = safePath(parsed.path);
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.appendFile(target, parsed.content, "utf8");
+  const stat = await fs.stat(target);
+  return `Appended ${parsed.content.length} bytes to ${parsed.path} (now ${stat.size} bytes)`;
 }
 
 async function writeFileBase64(args) {
@@ -293,6 +305,7 @@ const tool_map = {
   createFolder,
   writeFile,
   writeFileBase64,
+  appendFile,
   readFile: readFileTool,
   listDir,
   scaffoldClone,
@@ -317,7 +330,8 @@ Shape: {"step":"START|THINK|TOOL|OUTPUT","content":"...","tool_name":"...","tool
 Tools:
 - fetchUrl(url): GET a URL, returns stripped HTML/text. Use this to read a site before cloning it.
 - createFolder(path)
-- writeFile(JSON-string {"path":"...","content":"..."}): write the COMPLETE final file. HTML at least 1500 chars, CSS at least 800 chars, no skeletons. Escape newlines inside content as \\n. Don't paste raw fetchUrl output back in. Link only to ./style.css and ./script.js.
+- writeFile(JSON-string {"path":"...","content":"..."}): write a file. HTML must be at least 600 chars (header+main+footer), CSS at least 250. Escape newlines as \\n. Don't paste raw fetchUrl output. Link only to ./style.css and ./script.js.
+- appendFile(JSON-string {"path":"...","content":"..."}): add more content to a file you already wrote. Use this to grow a file in chunks if writing it all at once would be too large.
 ${templateLine}
 - readFile(path), listDir(path), executeCommand(cmd)
 - getTheWeatherOfCity(city), getGithubDetailsAboutUser(user)
@@ -500,7 +514,11 @@ async function runAgentTurn(messages) {
           role: "user",
           content: JSON.stringify({ step: "OBSERVE", content: observation }),
         });
-        if (parsed.tool_name === "writeFile" || parsed.tool_name === "writeFileBase64") {
+        if (
+          parsed.tool_name === "writeFile" ||
+          parsed.tool_name === "writeFileBase64" ||
+          parsed.tool_name === "appendFile"
+        ) {
           if (!toolFailed) {
             const a = coerceWriteArgs(parsed.tool_args);
             if (a?.path) created.files.add(a.path);
