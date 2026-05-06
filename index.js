@@ -6,23 +6,23 @@ import fs from "fs/promises";
 import { exec } from "child_process";
 import { OpenAI } from "openai";
 
-if (!process.env.GEMINI_API_KEY) {
+if (!process.env.GROQ_API_KEY) {
   console.error(
-    "Missing GEMINI_API_KEY. Copy .env.example to .env and paste a free key from https://aistudio.google.com/app/apikey"
+    "Missing GROQ_API_KEY. Copy .env.example to .env and paste a free key from https://console.groq.com/keys"
   );
   process.exit(1);
 }
 
-const MODEL = process.env.MODEL || "gemini-2.0-flash";
-const MIN_DELAY_MS = Number(process.env.MIN_DELAY_MS || 4500);
+const MODEL = process.env.MODEL || "llama-3.3-70b-versatile";
+const MIN_DELAY_MS = Number(process.env.MIN_DELAY_MS || 1500);
 const PROJECT_ROOT = process.cwd();
 const MAX_TURN_CALLS = 30;
 const MAX_TOOL_ERRORS = 4;
 const MAX_HISTORY_CHARS = 60_000;
 
 const client = new OpenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
+  apiKey: process.env.GROQ_API_KEY,
+  baseURL: "https://api.groq.com/openai/v1",
 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

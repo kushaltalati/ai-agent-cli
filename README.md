@@ -17,13 +17,13 @@ It is **general-purpose**: ask it to clone any public website, scaffold a portfo
   - `writeFileBase64({ path, content_base64 })` — escape-free fallback for very long files
   - `readFile(path)`, `listDir(path)`, `executeCommand(cmd)`
   - `getTheWeatherOfCity(city)`, `getGithubDetailsAboutUser(username)` (kept from the assignment baseline)
-- **Free LLM backend** — Google Gemini through its OpenAI-compatible endpoint (free key from [aistudio.google.com](https://aistudio.google.com)).
+- **Free LLM backend** — Groq's `llama-3.3-70b-versatile` via the OpenAI-compatible endpoint (free key from [console.groq.com](https://console.groq.com/keys), 30 RPM, no card needed).
 - **Robust runtime:**
   - Path sandboxing — every file op is resolved under the project root, so the agent can never write outside it.
   - JSON extraction that strips markdown fences and parses multiple objects from a single reply.
   - Lenient `writeFile` parser that recovers when the model produces slightly malformed JSON for big HTML/CSS payloads.
   - History trimmer keeps the prompt under 60 KB so long conversations don't blow the context window.
-  - Rate-limit safe: `MIN_DELAY_MS` throttle (default 6.5 s ≈ 9 RPM, fits free-tier Gemini) and exponential-backoff retry on 429/503.
+  - Rate-limit safe: `MIN_DELAY_MS` throttle and exponential-backoff retry on 429/503.
   - Credit-protection caps: max 30 model calls per turn, abort after 4 consecutive tool failures.
 
 ---
@@ -32,7 +32,7 @@ It is **general-purpose**: ask it to clone any public website, scaffold a portfo
 
 ```
 ai-agent-cli/
-├── .env.example          # GEMINI_API_KEY template
+├── .env.example          # GROQ_API_KEY template
 ├── .gitignore            # excludes .env, node_modules, .DS_Store
 ├── README.md
 ├── package.json
@@ -53,16 +53,16 @@ git clone https://github.com/kushaltalati/scaler-clone-agent.git
 cd scaler-clone-agent
 npm install
 cp .env.example .env
-# open .env, paste your Gemini API key (free, from https://aistudio.google.com)
+# open .env and paste your free Groq key from https://console.groq.com/keys
 npm start
 ```
 
 ### Optional `.env` knobs
 
 ```
-GEMINI_API_KEY=...               # required
-MODEL=gemini-2.0-flash           # default — best free-tier RPM/TPM mix
-MIN_DELAY_MS=4500                # min ms between API calls; lower if your tier allows
+GROQ_API_KEY=...                 # required
+MODEL=llama-3.3-70b-versatile    # default
+MIN_DELAY_MS=1500                # min ms between API calls
 ```
 
 ---
@@ -73,7 +73,7 @@ MIN_DELAY_MS=4500                # min ms between API calls; lower if your tier 
 $ npm start
 
 AI Agent CLI — chat with the agent. Type 'exit' to quit.
-Model: gemini-2.5-flash
+Model: llama-3.3-70b-versatile
 Try: "clone https://www.scaler.com" or "build a portfolio site for a designer".
 
 you > clone the scaler academy website
@@ -117,7 +117,7 @@ Then open `scaler-clone/index.html` (or any folder it produced) in your browser.
 
 ## How the loop works
 
-Each turn, Gemini returns one JSON object like:
+Each turn, the model returns one JSON object like:
 
 ```json
 { "step": "TOOL", "tool_name": "writeFile", "tool_args": "{\"path\":\"…\",\"content\":\"…\"}" }
@@ -125,7 +125,7 @@ Each turn, Gemini returns one JSON object like:
 
 The runtime in [`index.js`](./index.js):
 
-1. Sends the conversation to Gemini with `response_format: { type: "json_object" }` and a 6.5 s throttle since the free tier is ~10 RPM.
+1. Sends the conversation to Groq's llama-3.3-70b with `response_format: { type: "json_object" }` and a small throttle to stay under the 30 RPM free-tier cap.
 2. Extracts JSON objects from the reply (strips ` ```json ` fences if the model wraps them).
 3. Pushes the parsed step into history as the assistant's message.
 4. If `step === "TOOL"`, looks up the tool, executes it, captures stdout/return value, and pushes a synthetic `OBSERVE` user message back to the model.
