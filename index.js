@@ -298,29 +298,41 @@ const tool_map = {
   scaffoldClone,
 };
 
-const SYSTEM_PROMPT = `You are an AI coding agent that writes real files on disk.
+async function buildSystemPrompt() {
+  let templates = [];
+  try {
+    const all = await fs.readdir(safePath("templates"), { withFileTypes: true });
+    templates = all.filter((d) => d.isDirectory()).map((d) => d.name);
+  } catch {
+    templates = [];
+  }
+  const templateLine = templates.length
+    ? `- scaffoldClone(name): copy a ready-made template from templates/<name>/ into <name>-clone/. Available templates: ${templates.map((t) => `"${t}"`).join(", ")}. Use this when the user asks for one of these sites.`
+    : `- scaffoldClone(name): copy a ready-made template from templates/<name>/ into <name>-clone/. (No templates installed yet.)`;
+
+  return `You are an AI coding agent that writes real files on disk.
 Reply with EXACTLY ONE JSON object per turn. No prose, no markdown fences.
 Shape: {"step":"START|THINK|TOOL|OUTPUT","content":"...","tool_name":"...","tool_args":"..."}
 
 Tools:
-- fetchUrl(url): GET a URL, returns stripped HTML/text. Use before cloning.
+- fetchUrl(url): GET a URL, returns stripped HTML/text. Use this to read a site before cloning it.
 - createFolder(path)
-- writeFile(JSON-string {"path":"...","content":"..."}): write COMPLETE final file. HTML ≥1500 chars, CSS ≥800 chars, no skeletons. Escape newlines as \\n inside content. NEVER paste raw fetchUrl output. Link only to ./style.css and ./script.js.
-- scaffoldClone(name): copy a polished pre-built template into <name>-clone/ instantly. Available: "scaler". USE THIS for known sites instead of writeFile.
+- writeFile(JSON-string {"path":"...","content":"..."}): write the COMPLETE final file. HTML at least 1500 chars, CSS at least 800 chars, no skeletons. Escape newlines inside content as \\n. Don't paste raw fetchUrl output back in. Link only to ./style.css and ./script.js.
+${templateLine}
 - readFile(path), listDir(path), executeCommand(cmd)
 - getTheWeatherOfCity(city), getGithubDetailsAboutUser(user)
 
-Loop: 1 START → 1 THINK → TOOLs (wait for OBSERVE between each) → OUTPUT.
-Don't repeat THINK. Take action.
+Loop: one START, then one THINK, then TOOL calls one at a time (wait for OBSERVE between each), then OUTPUT. Don't keep thinking, take action.
 
-Folder name comes from the user's request (slug it). "clone scaler.com" → "scaler-clone". "build a portfolio for jane" → "jane-portfolio". Never invent fixed names.
+Folder name comes from the user's request. "clone scaler.com" -> "scaler-clone". "build a portfolio for jane" -> "jane-portfolio".
 
-For a website clone:
-- KNOWN SITE (scaler): fetchUrl → scaffoldClone(name) → listDir → OUTPUT. Done in 4 tool calls.
-- UNKNOWN SITE: fetchUrl → createFolder → writeFile index.html → writeFile style.css → writeFile script.js → listDir → OUTPUT.
+To clone a website:
+- If a template exists for it, do fetchUrl -> scaffoldClone(name) -> listDir -> OUTPUT.
+- Otherwise: fetchUrl -> createFolder -> writeFile index.html -> writeFile style.css -> writeFile script.js -> listDir -> OUTPUT.
 
-Example:
+Example tool call:
 {"step":"TOOL","tool_name":"writeFile","tool_args":"{\\"path\\":\\"site/index.html\\",\\"content\\":\\"<!doctype html>...\\"}"}`;
+}
 
 function extractJsonObjects(text) {
   if (!text) return [];
@@ -525,7 +537,19 @@ async function runAgentTurn(messages) {
           }
           const firstHtml = [...created.files].find((p) => p.toLowerCase().endsWith(".html"));
           if (firstHtml) {
-            console.log(`\nOpen in browser:  open "${path.resolve(PROJECT_ROOT, firstHtml)}"\n`);
+            const abs = path.resolve(PROJECT_ROOT, firstHtml);
+            console.log("");
+            console.log("To view the result in your browser, run:");
+            console.log(`  open "${abs}"`);
+            console.log("");
+            console.log("Or double-click the file in Finder:");
+            console.log(`  ${abs}`);
+            console.log("");
+          } else if (created.folders.size) {
+            const firstFolder = [...created.folders][0];
+            console.log("");
+            console.log(`Created folder: ${path.resolve(PROJECT_ROOT, firstFolder)}/`);
+            console.log("");
           }
         }
         producedOutput = true;
@@ -557,7 +581,8 @@ async function runAgentTurn(messages) {
 }
 
 async function main() {
-  const messages = [{ role: "system", content: SYSTEM_PROMPT }];
+  const systemPrompt = await buildSystemPrompt();
+  const messages = [{ role: "system", content: systemPrompt }];
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   let closed = false;
   rl.on("close", () => {
@@ -573,9 +598,9 @@ async function main() {
       }
     });
 
-  console.log("AI Agent CLI — chat with the agent. Type 'exit' to quit.");
-  console.log(`Model: ${MODEL}`);
-  console.log('Try: "clone <any-url>" or "build a <type> site for <whom>".\n');
+  console.log("ai-agent-cli. type 'exit' to quit.");
+  console.log(`model: ${MODEL}`);
+  console.log('try: clone <any-url>  /  build a <type> site for <whom>\n');
 
   while (!closed) {
     let line;
