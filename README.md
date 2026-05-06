@@ -63,10 +63,11 @@ Paste that command back into the same terminal and the page opens in your defaul
 ```
 GROQ_API_KEY=...
 MODEL=llama-3.3-70b-versatile
+MODELS=llama-3.3-70b-versatile,meta-llama/llama-4-maverick-17b-128e-instruct,llama-3.1-8b-instant
 MIN_DELAY_MS=1500
 ```
 
-If the 70B model is rate-limited (Groq free tier is 100k tokens/day per model), switch to `meta-llama/llama-4-scout-17b-16e-instruct` or `qwen/qwen3-32b` — each model has its own daily quota.
+`MODELS` is a comma-separated fallback chain. If a model 429s (TPD/TPM exhausted) or 503s, the runtime rotates to the next one in the list and keeps the turn going. If you only set `MODEL`, the defaults are appended after it so you still get fallbacks for free.
 
 ## Templates
 
@@ -84,6 +85,8 @@ A few small things that took some iteration to get right:
 - After every successful `writeFile`, the assistant message holding the giant content is replaced with a short "[content omitted]" note. Otherwise the conversation history doubles every file you write and you hit token limits inside three calls.
 - Throttle plus exponential backoff on 429s. Groq surfaces the actual reason (TPM, TPD, etc.) in the body so you can see what's happening.
 - writeFile rejects files that don't meet a quality bar: HTML needs at least 2000 chars with a nav, hero, three sections, and footer; CSS needs at least 800 chars with a media query and hover state; script.js has to actually exist. The model gets the rejection back as an OBSERVE message and rewrites the file properly.
+- Quality-bar rejections don't count as protocol errors. The agent only aborts on real protocol mistakes (missing tool_name, unknown tool, etc.), so the model gets plenty of room to retry a too-short HTML write without burning its error budget.
+- Model fallback chain. On 429/503/decommissioned-model errors, the runtime backs off, then rotates to the next model in `MODELS` instead of dying mid-turn.
 
 ## Project layout
 

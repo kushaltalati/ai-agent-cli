@@ -13,11 +13,35 @@ if (!process.env.GROQ_API_KEY) {
   process.exit(1);
 }
 
-const MODEL = process.env.MODEL || "llama-3.3-70b-versatile";
+const DEFAULT_MODEL_CHAIN = [
+  "llama-3.3-70b-versatile",
+  "meta-llama/llama-4-maverick-17b-128e-instruct",
+  "meta-llama/llama-4-scout-17b-16e-instruct",
+  "llama-3.1-8b-instant",
+];
+const MODELS = (() => {
+  if (process.env.MODELS) {
+    return process.env.MODELS.split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  const primary = process.env.MODEL?.trim();
+  const chain = primary ? [primary, ...DEFAULT_MODEL_CHAIN] : [...DEFAULT_MODEL_CHAIN];
+  return [...new Set(chain)];
+})();
+let modelIdx = 0;
+const currentModel = () => MODELS[modelIdx];
+function rotateModel(reason) {
+  if (modelIdx + 1 < MODELS.length) {
+    modelIdx++;
+    console.log(`[model] switching to ${MODELS[modelIdx]} (${reason})`);
+    return true;
+  }
+  console.log(`[model] no more fallbacks (last tried: ${MODELS[modelIdx]})`);
+  return false;
+}
 const MIN_DELAY_MS = Number(process.env.MIN_DELAY_MS || 3000);
 const PROJECT_ROOT = process.cwd();
-const MAX_TURN_CALLS = 30;
-const MAX_TOOL_ERRORS = 4;
+const MAX_TURN_CALLS = 40;
+const MAX_TOOL_ERRORS = 8;
 const MAX_HISTORY_CHARS = 20_000;
 
 const client = new OpenAI({
@@ -193,22 +217,22 @@ async function writeFile(args) {
   if (lower.endsWith(".html")) {
     if (trimmed.length < 2000) {
       throw new Error(
-        `HTML too short (${trimmed.length} chars, need >=2000). A real page needs: doctype, head with title + meta viewport + link to ./style.css, body with <nav>, <header> hero (big heading + tagline + CTA), <main> containing AT LEAST 3 <section> blocks (e.g. about, services/skills, contact) each with a heading and 2-3 paragraphs or a list/cards, and <footer>. Write the full first draft in one writeFile, then use appendFile only to add extras.`
+        `HTML too short (${trimmed.length} chars, need 2000+). Include doctype, head with title + meta viewport + link to ./style.css, and body with nav, header hero, main containing 3+ section blocks with real content, and footer. Use appendFile to add more after the initial write.`
       );
     }
     if (/<(header|main|footer|section)>\s*<\/\1>/i.test(trimmed)) {
       throw new Error(
-        "HTML has an empty <header>, <main>, <footer>, or <section>. Put real content (headings, paragraphs, lists, cards) inside each."
+        "HTML has an empty <header>, <main>, <footer>, or <section>. Put real content inside each."
       );
     }
     const sectionCount = (trimmed.match(/<section\b/gi) || []).length;
     if (sectionCount < 3) {
       throw new Error(
-        `HTML only has ${sectionCount} <section> block(s). Include at least 3 distinct sections inside <main> (e.g. About, Services/Skills/Experience, Contact) — each with a heading and real content.`
+        `HTML only has ${sectionCount} <section> block(s), need 3+ inside <main> (e.g. about, services, contact).`
       );
     }
     if (!/<nav\b/i.test(trimmed)) {
-      throw new Error("HTML is missing a <nav>. Include a navigation bar with links to the page sections (#about, #services, #contact, etc.).");
+      throw new Error("HTML has no <nav>. Add a navigation bar with links to the page sections.");
     }
     if (
       /\/_next\/|\/storyblok-assets\/|data-dpl-id=|githubassets\.com|data-color-mode=|data-a11y-|fbcdn\.net|cdn\.jsdelivr\.net.*hash|integrity="sha/i.test(
@@ -223,14 +247,14 @@ async function writeFile(args) {
   if (lower.endsWith(".css")) {
     if (trimmed.length < 800) {
       throw new Error(
-        `CSS too short (${trimmed.length} chars, need >=800). Include: a CSS reset/box-sizing, body typography + background, a color palette (use CSS variables), nav styling, hero section with large heading + CTA button (with hover state), section spacing + headings, a card/grid layout for one section, footer styling, and at least one @media query for mobile. Use appendFile for more.`
+        `CSS too short (${trimmed.length} chars, need 800+). Include a reset, body typography, color variables, nav, hero with CTA, sections, a grid for cards, footer, and at least one @media query. Use appendFile to add more.`
       );
     }
     if (!/@media\b/i.test(trimmed)) {
-      throw new Error("CSS has no @media query. Add at least one breakpoint (e.g. @media (max-width: 720px)) so the layout works on mobile.");
+      throw new Error("CSS has no @media query. Add a mobile breakpoint, e.g. @media (max-width: 720px).");
     }
     if (!/:hover\b/i.test(trimmed)) {
-      throw new Error("CSS has no :hover state. Add hover styles on buttons and nav links so the page feels interactive.");
+      throw new Error("CSS has no :hover state. Add hover styles on buttons and nav links.");
     }
   }
   const target = safePath(parsed.path);
@@ -344,7 +368,7 @@ async function buildSystemPrompt() {
     ? `- scaffoldClone(name): copy a ready-made template from templates/<name>/ into <name>-clone/. Available templates: ${templates.map((t) => `"${t}"`).join(", ")}. Use this when the user asks for one of these sites.`
     : `- scaffoldClone(name): copy a ready-made template from templates/<name>/ into <name>-clone/. (No templates installed yet.)`;
 
-  return `You are an AI coding agent that writes real, production-quality static websites on disk.
+  return `You are an AI coding agent that writes real static websites on disk.
 Reply with EXACTLY ONE JSON object per turn. No prose, no markdown fences.
 Shape: {"step":"START|THINK|TOOL|OUTPUT","content":"...","tool_name":"...","tool_args":"..."}
 
@@ -352,7 +376,7 @@ Tools:
 - fetchUrl(url): GET a URL, returns stripped HTML/text. Use this to read a site before cloning it.
 - createFolder(path)
 - writeFile(JSON-string {"path":"...","content":"..."}): write a file. Escape newlines as \\n. Don't paste raw fetchUrl output. Link only to ./style.css and ./script.js.
-- appendFile(JSON-string {"path":"...","content":"..."}): add more content to a file you already wrote. Useful for building bigger pages in chunks.
+- appendFile(JSON-string {"path":"...","content":"..."}): add more to a file you already wrote. Useful for building bigger pages in chunks.
 ${templateLine}
 - readFile(path), listDir(path), executeCommand(cmd)
 - getTheWeatherOfCity(city), getGithubDetailsAboutUser(user)
@@ -361,43 +385,27 @@ Loop: one START, then one THINK, then TOOL calls one at a time (wait for OBSERVE
 
 Folder name comes from the user's request. "clone scaler.com" -> "scaler-clone". "build a portfolio for jane" -> "jane-portfolio". "doctor portfolio" -> "doctor-portfolio".
 
-QUALITY BAR — every site you build (portfolio, landing page, clone) MUST include all three files: index.html, style.css, script.js. A site without CSS is a failure. Never emit OUTPUT until all three exist.
+Every site you build needs all three files: index.html, style.css, script.js. Don't OUTPUT until all three exist.
 
-index.html requirements (>=2000 chars):
-- <!doctype html>, <html lang="en">, <head> with <title>, <meta charset>, <meta viewport>, <link rel="stylesheet" href="./style.css">
-- <nav> with brand/logo + links to in-page anchors (#about, #services, #contact)
-- <header> hero with a big <h1>, a tagline <p>, and a call-to-action <a class="btn">
-- <main> with AT LEAST 3 <section id="..."> blocks. For a portfolio: About (bio + photo placeholder), Services or Skills or Experience (3+ cards/items in a grid), Contact (email, phone, social links or a form). For a landing page: Features, How it works, Testimonials/Pricing, CTA.
-- Real, specific placeholder content for the persona (e.g. for a doctor: specialty, years of experience, qualifications, clinic address, appointment hours, testimonials from patients) — never write "Welcome to my portfolio" filler.
-- <footer> with copyright + secondary links.
-- <script src="./script.js"></script> at end of body.
+index.html (2000+ chars): doctype, head with title + viewport + link to ./style.css, body with <nav>, hero <header> (h1 + tagline + CTA), <main> with 3+ <section id="..."> blocks (e.g. about, services, contact), <footer>, <script src="./script.js"></script>. Use real content for the persona, not "Welcome to my portfolio" filler.
 
-style.css requirements (>=800 chars):
-- CSS reset / box-sizing border-box, smooth-scroll on html.
-- :root with 4-6 CSS variables for the color palette (primary, accent, bg, text, muted, surface). Pick a palette that fits the persona (e.g. doctor = calm blues/greens, designer = bold accents).
-- Typography: import or stack a real Google font, set base font-size, line-height, headings.
-- Nav: flex layout, sticky or fixed, links with :hover.
-- Hero: full-width, large padding, gradient or solid background, big heading, CTA button with :hover transform/shadow.
-- Sections: consistent vertical rhythm, max-width container, section headings.
-- A grid (display: grid) for the cards section with hover lift.
-- Footer styling.
-- At least one @media (max-width: 720px) {...} block stacking nav + grid for mobile.
+style.css (800+ chars): reset / box-sizing, :root with color variables, body typography, nav with :hover, hero with CTA button, section spacing, a grid for cards with hover lift, footer, and at least one @media (max-width: 720px) block.
 
-script.js requirements: at minimum a mobile-nav toggle OR smooth-scroll for anchor links OR a simple scroll-reveal — something that runs and adds interactivity. Don't leave it empty.
+script.js: something that runs — mobile nav toggle, smooth-scroll, or scroll-reveal. Don't leave it empty.
 
-Build flow (use this exactly when the user asks to BUILD a site from scratch):
-1. createFolder(<name>-portfolio or <name>-site)
-2. writeFile <folder>/index.html  (full page, hits the quality bar above)
-3. writeFile <folder>/style.css   (full stylesheet, hits the quality bar above)
-4. writeFile <folder>/script.js   (real interactivity)
-5. listDir(<folder>)
+Build flow (when the user asks to build a site from scratch):
+1. createFolder
+2. writeFile index.html
+3. writeFile style.css
+4. writeFile script.js
+5. listDir
 6. OUTPUT
 
-Clone flow (when user asks to CLONE a real URL):
-- If a template exists for it: fetchUrl -> scaffoldClone(name) -> listDir -> OUTPUT.
-- Otherwise: fetchUrl -> createFolder -> writeFile index.html -> writeFile style.css -> writeFile script.js -> listDir -> OUTPUT (same quality bar).
+Clone flow (when the user asks to clone a real URL):
+- If a template exists, fetchUrl -> scaffoldClone(name) -> listDir -> OUTPUT.
+- Otherwise fetchUrl -> createFolder -> writeFile index.html -> writeFile style.css -> writeFile script.js -> listDir -> OUTPUT.
 
-If a writeFile call is rejected for being too short or missing a section/nav/@media/:hover, DO NOT shrug and emit OUTPUT — rewrite the file with the missing pieces and call writeFile again.
+If a writeFile is rejected for being too short or missing nav/section/@media/:hover, rewrite the file with the missing pieces and call writeFile again. Don't OUTPUT yet.
 
 Example tool call:
 {"step":"TOOL","tool_name":"writeFile","tool_args":"{\\"path\\":\\"site/index.html\\",\\"content\\":\\"<!doctype html>...\\"}"}`;
@@ -476,7 +484,7 @@ async function callModel(messages) {
       lastCallAt = Date.now();
       totalCalls++;
       return await client.chat.completions.create({
-        model: MODEL,
+        model: currentModel(),
         messages,
         response_format: { type: "json_object" },
         temperature: 0.3,
@@ -485,23 +493,46 @@ async function callModel(messages) {
     } catch (err) {
       const status = err?.status ?? err?.response?.status;
       const body = err?.error?.message || err?.message || "";
-      if (status === 429 && attempt < 5) {
-        const wait = Math.min(60_000, 5_000 * 2 ** attempt);
+      const code = err?.error?.code || err?.code || "";
+      const isCtxLimit =
+        /context[_ ]length|maximum context|too many tokens|tokens per minute|rate_limit_exceeded|tpm/i.test(
+          `${body} ${code}`
+        );
+      if (status === 429) {
+        if (attempt < 2) {
+          const wait = 5_000 * (attempt + 1);
+          console.log(
+            `[rate-limit] 429 on ${currentModel()} — waiting ${wait / 1000}s (attempt ${attempt + 1}/2)${
+              body ? `\n         ${truncate(body, 200)}` : ""
+            }`
+          );
+          await sleep(wait);
+          attempt++;
+          continue;
+        }
+        if (rotateModel(isCtxLimit ? "tpm/context limit" : "rate-limited")) {
+          attempt = 0;
+          continue;
+        }
+      }
+      if (status === 503 && attempt < 2) {
+        const wait = 8_000 * (attempt + 1);
         console.log(
-          `[rate-limit] 429 — waiting ${wait / 1000}s (attempt ${attempt + 1}/5)${
-            body ? `\n         ${truncate(body, 200)}` : ""
-          }`
+          `[upstream] 503 on ${currentModel()} — waiting ${wait / 1000}s (attempt ${attempt + 1}/2)`
         );
         await sleep(wait);
         attempt++;
         continue;
       }
-      if (status === 503 && attempt < 3) {
-        const wait = 8_000 * (attempt + 1);
-        console.log(`[upstream] 503 — waiting ${wait / 1000}s (attempt ${attempt + 1}/3)`);
-        await sleep(wait);
-        attempt++;
+      if ((status === 503 || status === 500 || status === 502) && rotateModel(`upstream ${status}`)) {
+        attempt = 0;
         continue;
+      }
+      if ((status === 400 || status === 404) && /model|decommission|not[_ ]found/i.test(body)) {
+        if (rotateModel("model unavailable")) {
+          attempt = 0;
+          continue;
+        }
       }
       throw err;
     }
@@ -537,6 +568,7 @@ async function runAgentTurn(messages) {
     let producedTool = false;
     let producedOutput = false;
     let toolFailed = false;
+    let isProgressFailure = false;
 
     for (const parsed of objects) {
       if (!parsed.step) continue;
@@ -552,8 +584,11 @@ async function runAgentTurn(messages) {
         console.log(`[TOOL]  ${parsed.tool_name}(${truncate(argPreview, 90)})`);
         const fn = tool_map[parsed.tool_name];
         let observation;
-        if (!fn) {
-          observation = `Tool "${parsed.tool_name}" is not available.`;
+        if (!parsed.tool_name) {
+          observation = `Your last JSON had no "tool_name". Reply with one JSON object that includes both tool_name and tool_args. Available tools: ${Object.keys(tool_map).join(", ")}.`;
+          toolFailed = true;
+        } else if (!fn) {
+          observation = `Tool "${parsed.tool_name}" is not available. Pick one of: ${Object.keys(tool_map).join(", ")}.`;
           toolFailed = true;
         } else {
           try {
@@ -562,6 +597,13 @@ async function runAgentTurn(messages) {
           } catch (err) {
             observation = `Tool error: ${err.message}`;
             toolFailed = true;
+            if (
+              (parsed.tool_name === "writeFile" || parsed.tool_name === "appendFile") &&
+              /too short|empty <|missing a <nav|<section> block|@media|:hover/i.test(err.message)
+            ) {
+              isProgressFailure = true;
+              observation += `\nQuality-bar rejection, the file was not written. Rewrite it with the missing pieces and call writeFile again. Don't OUTPUT yet.`;
+            }
           }
         }
         console.log(`[OBS]   ${truncate(observation, 200)}`);
@@ -632,9 +674,13 @@ async function runAgentTurn(messages) {
 
     if (producedOutput) return;
     if (producedTool) {
-      toolErrors = toolFailed ? toolErrors + 1 : 0;
+      if (toolFailed && !isProgressFailure) {
+        toolErrors++;
+      } else if (!toolFailed) {
+        toolErrors = 0;
+      }
       if (toolErrors >= MAX_TOOL_ERRORS) {
-        console.log(`[!] ${toolErrors} consecutive tool errors — aborting turn.`);
+        console.log(`[!] ${toolErrors} consecutive protocol errors — aborting turn.`);
         return;
       }
       continue;
@@ -672,7 +718,7 @@ async function main() {
     });
 
   console.log("ai-agent-cli. type 'exit' to quit.");
-  console.log(`model: ${MODEL}`);
+  console.log(`model: ${currentModel()}${MODELS.length > 1 ? `  (fallbacks: ${MODELS.slice(1).join(", ")})` : ""}`);
   console.log('try: clone <any-url>  /  build a <type> site for <whom>\n');
 
   while (!closed) {
