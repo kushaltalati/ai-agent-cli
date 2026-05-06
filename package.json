@@ -1,0 +1,15 @@
+{
+  "name": "scaler-clone-agent",
+  "version": "1.0.0",
+  "description": "Conversational CLI agent that clones the Scaler Academy website using HTML/CSS/JS.",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "dotenv": "^16.4.5",
+    "openai": "^4.67.3"
+  }
+}
