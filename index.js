@@ -13,8 +13,8 @@ if (!process.env.GEMINI_API_KEY) {
   process.exit(1);
 }
 
-const MODEL = process.env.MODEL || "gemini-2.5-flash";
-const MIN_DELAY_MS = Number(process.env.MIN_DELAY_MS || 6500);
+const MODEL = process.env.MODEL || "gemini-2.0-flash";
+const MIN_DELAY_MS = Number(process.env.MIN_DELAY_MS || 4500);
 const PROJECT_ROOT = process.cwd();
 const MAX_TURN_CALLS = 30;
 const MAX_TOOL_ERRORS = 4;

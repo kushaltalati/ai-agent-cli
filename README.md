@@ -61,8 +61,8 @@ npm start
 
 ```
 GEMINI_API_KEY=...               # required
-MODEL=gemini-2.5-flash           # default; try gemini-2.0-flash for higher RPM
-MIN_DELAY_MS=6500                # min ms between API calls; lower if your tier allows
+MODEL=gemini-2.0-flash           # default — best free-tier RPM/TPM mix
+MIN_DELAY_MS=4500                # min ms between API calls; lower if your tier allows
 ```
 
 ---
